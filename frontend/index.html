@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>OfficeHourLens – Smart Office Hours</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="header">
+        <h1>OfficeHourLens</h1>
+        <p class="tagline">AI-augmented office hours to help students faster.</p>
+      </header>
+
+      <main class="main">
+        <section class="card">
+          <div class="tabs">
+            <button class="tab-button active" id="tab-student">Student</button>
+            <button class="tab-button" id="tab-ta">TA</button>
+            <button class="tab-button" id="tab-faq">FAQ</button>
+          </div>
+        </section>
+
+        <section class="card" id="student-view">
+          <h2>Student – Join the queue</h2>
+          <div class="field">
+            <label>Your name or alias</label>
+            <input id="s-name" type="text" placeholder="Alex" />
+          </div>
+          <div class="field">
+            <label>Course (optional)</label>
+            <input id="s-course" type="text" placeholder="CS 2100" />
+          </div>
+          <div class="field">
+            <label>What are you stuck on?</label>
+            <textarea id="s-question" placeholder="Describe your question or error here"></textarea>
+          </div>
+          <button id="s-submit">Join office hours queue</button>
+          <p id="s-status" class="status"></p>
+
+          <div id="s-ai-answer" class="ai-answer hidden">
+            <h3>Suggested answer while you wait</h3>
+            <p id="s-ai-text"></p>
+            <p id="s-ai-sources" class="ai-sources"></p>
+          </div>
+        </section>
+
+        <section class="card hidden" id="ta-view">
+          <h2>TA – Queue dashboard</h2>
+          <div class="field">
+            <label>Refresh queue</label>
+            <button id="ta-refresh">Refresh</button>
+          </div>
+          <p id="ta-status" class="status"></p>
+          <table class="table" id="ta-table">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Student</th>
+                <th>Course</th>
+                <th>Question</th>
+                <th>AI suggestion</th>
+                <th>Status</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+
+          <hr style="margin: 24px 0; border: 1px solid rgba(148, 163, 184, 0.3);" />
+
+          <h2>Course Materials</h2>
+          <p style="font-size: 0.85rem; color: #9ca3af;">Upload course documents to improve AI suggestions</p>
+          
+          <div class="field">
+            <label>Document Title</label>
+            <input id="doc-title" type="text" placeholder="e.g., HW2: Neural Networks" />
+          </div>
+          <div class="field">
+            <label>Document Type</label>
+            <select id="doc-type" style="width: 100%; border-radius: 10px; border: 1px solid rgba(148, 163, 184, 0.4); padding: 8px 10px; background: rgba(15, 23, 42, 0.9); color: #f9fafb;">
+              <option value="syllabus">Syllabus</option>
+              <option value="hw">Homework</option>
+              <option value="slide">Slides</option>
+              <option value="lecture_notes">Lecture Notes</option>
+              <option value="other">Other</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Content</label>
+            <textarea id="doc-content" placeholder="Paste course material content here..."></textarea>
+          </div>
+          <button id="doc-submit">Add Course Material</button>
+          <p id="doc-status" class="status"></p>
+
+          <div class="field" style="margin-top: 16px;">
+            <label>Existing Course Materials</label>
+            <button id="doc-refresh" class="small">Refresh</button>
+          </div>
+          <div id="doc-list" class="doc-list"></div>
+        </section>
+
+        <section class="card hidden" id="faq-view">
+          <h2>FAQ – Frequently Asked Questions</h2>
+          <div class="field">
+            <label>Refresh FAQ</label>
+            <button id="faq-refresh">Refresh</button>
+          </div>
+          <p id="faq-status" class="status"></p>
+          <div id="faq-list" class="faq-list"></div>
+        </section>
+      </main>
+
+      <footer class="footer">
+        <p>Built with open-source models · No OpenAI / Claude APIs</p>
+      </footer>
+    </div>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
