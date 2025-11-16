@@ -1,0 +1,47 @@
+# --- Python ---
+# Bytecode
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual Environments
+venv/
+env/
+.venv/
+*.venv
+
+# --- Database ---
+# Ignore the SQLite database file
+*.db
+*.sqlite
+*.sqlite3
+officehourlens.db
+
+# --- Frontend / Node.js ---
+# Node modules are large and should be installed, not tracked
+node_modules/
+
+# Log files
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# --- Build Artifacts ---
+# Common build output folders
+dist/
+build/
+*.egg-info/
+
+# --- IDE & OS Files ---
+# VSCode
+.vscode/
+
+# PyCharm / IntelliJ
+.idea/
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db

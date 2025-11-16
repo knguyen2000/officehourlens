@@ -14,6 +14,7 @@ class LLMClient:
     ) -> None:
         self.base_url = base_url or os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
         self.model = model or os.environ.get("OLLAMA_MODEL", "llama3.2")
+        self.embedding_model = os.environ.get("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text")
         self.use_fallback_on_error = use_fallback_on_error
 
     def _generate(self, prompt: str, max_tokens: int = 512) -> str:
@@ -35,6 +36,24 @@ class LLMClient:
                 print(f"[LLMClient] Error calling Ollama, falling back: {exc}")
                 return ""
             raise
+
+    def get_embedding(self, text: str) -> list[float]:
+        """Generates a semantic vector for a given text."""
+        try:
+            resp = requests.post(
+                f"{self.base_url}/api/embeddings",
+                json={
+                    "model": self.embedding_model,
+                    "prompt": text,
+                },
+                timeout=30,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return data.get("embedding", [])
+        except Exception as e:
+            print(f"[Embeddings] Error: {e}")
+            return []
 
     def answer_with_context(self, question: str, context_snippets: list[dict[str, str]]) -> str:
         context_texts = []

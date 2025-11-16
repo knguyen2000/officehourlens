@@ -4,3 +4,5 @@ sqlalchemy
 pydantic
 requests
 python-multipart
+numpy
+scikit-learn

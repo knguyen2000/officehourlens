@@ -7,10 +7,11 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 
 from database import Base, SessionLocal, engine
 from llm_client import LLMClient
-from models import CourseDoc, FAQEntry, Question
+from models import CourseDoc, FAQEntry, Question, CourseSettings # Import CourseSettings
 from schemas import (
     CourseDocCreate,
     CourseDocOut,
@@ -20,16 +21,22 @@ from schemas import (
     QuestionResolve,
     QuestionStatusUpdate,
     QueueResponse,
+    CourseSettingsBase, # Import CourseSettings schemas
+    CourseSettingsOut
 )
 
-import math
+import numpy as np
+from sklearn.cluster import DBSCAN
+from sklearn.metrics.pairwise import cosine_similarity
 
 Base.metadata.create_all(bind=engine)
 
-# Add cluster_name column if it doesn't exist (migration)
+# --- One-time Migrations ---
 try:
-    from sqlalchemy import inspect, text
+    from sqlalchemy import inspect
     inspector = inspect(engine)
+    
+    # Migration for faq_entries table
     faq_columns = [col['name'] for col in inspector.get_columns('faq_entries')]
     
     if 'cluster_name' not in faq_columns:
@@ -37,6 +44,22 @@ try:
             conn.execute(text('ALTER TABLE faq_entries ADD COLUMN cluster_name VARCHAR(200)'))
             conn.commit()
             print("[Migration] Added cluster_name column to faq_entries table")
+    
+    if 'ask_count' not in faq_columns:
+        with engine.connect() as conn:
+            conn.execute(text('ALTER TABLE faq_entries ADD COLUMN ask_count INTEGER DEFAULT 1 NOT NULL'))
+            conn.commit()
+            print("[Migration] Added ask_count column to faq_entries table")
+
+    # Migration for settings table
+    if 'course_settings' not in inspector.get_table_names():
+         # The create_all above should handle this, but we can seed it
+         with SessionLocal() as db:
+            if db.query(CourseSettings).count() == 0:
+                db.add(CourseSettings(key="faq_threshold", value="2"))
+                db.commit()
+                print("[Migration] Seeded default settings")
+
 except Exception as e:
     print(f"[Migration] Note: {e}")
     pass
@@ -72,10 +95,12 @@ def _get_queue_position(db: Session, question: Question) -> int:
     )
     return count
 
-
 def _find_relevant_contexts(db: Session, question_text: str, top_k: int = 5):
+    """Finds relevant docs and FAQs using semantic search or keyword fallback."""
     docs: List[CourseDoc] = db.query(CourseDoc).all()
     faqs: List[FAQEntry] = db.query(FAQEntry).all()
+
+    q_embedding = llm_client.get_embedding(question_text)
 
     candidates: List[dict] = []
     for d in docs:
@@ -83,7 +108,7 @@ def _find_relevant_contexts(db: Session, question_text: str, top_k: int = 5):
             {
                 "label": f"Doc: {d.title}",
                 "text": d.content[:600],
-                "score": 0,
+                "embedding": llm_client.get_embedding(d.content[:600]),
             }
         )
     for f in faqs:
@@ -92,15 +117,28 @@ def _find_relevant_contexts(db: Session, question_text: str, top_k: int = 5):
             {
                 "label": "FAQ",
                 "text": combined[:600],
-                "score": 0,
+                "embedding": llm_client.get_embedding(combined[:600]),
             }
         )
 
-    q_words = set(question_text.lower().split())
-    for c in candidates:
-        text_words = set(c["text"].lower().split())
-        overlap = q_words.intersection(text_words)
-        c["score"] = len(overlap)
+    # If embeddings are working, use them
+    if q_embedding and all(c.get("embedding") for c in candidates):
+        q_vec = np.array(q_embedding).reshape(1, -1)
+        for c in candidates:
+            # Ensure embedding exists before trying to reshape
+            if c.get("embedding"):
+                c_vec = np.array(c["embedding"]).reshape(1, -1)
+                c["score"] = cosine_similarity(q_vec, c_vec)[0][0]
+            else:
+                c["score"] = 0
+    else:
+        # Fallback to word overlap
+        print("[Context] Warning: Embeddings failed, falling back to word overlap.")
+        q_words = set(question_text.lower().split())
+        for c in candidates:
+            text_words = set(c["text"].lower().split())
+            overlap = q_words.intersection(text_words)
+            c["score"] = len(overlap)
 
     candidates.sort(key=lambda x: x["score"], reverse=True)
     if not candidates:
@@ -183,9 +221,23 @@ def update_status(question_id: int, payload: QuestionStatusUpdate, db: Session =
     db.refresh(q)
     return q
 
+@app.delete("/api/faq/all")
+def delete_all_faqs(db: Session = Depends(get_db)):
+    """Deletes all entries from the FAQ table."""
+    try:
+        num_deleted = db.query(FAQEntry).delete()
+        db.commit()
+        print(f"[FAQ] Deleted {num_deleted} entries.")
+        return {"ok": True, "message": f"Deleted {num_deleted} FAQ entries."}
+    except Exception as e:
+        db.rollback()
+        print(f"[FAQ] Error deleting all FAQs: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete all FAQs.")
+
 
 @app.post("/api/questions/{question_id}/resolve", response_model=QuestionOut)
 def resolve_question(question_id: int, payload: QuestionResolve, db: Session = Depends(get_db)):
+    """Mark a question as 'done' and check if it should be added/updated in the FAQ."""
     q = db.query(Question).filter(Question.id == question_id).first()
     if not q:
         raise HTTPException(status_code=404, detail="Question not found")
@@ -197,99 +249,122 @@ def resolve_question(question_id: int, payload: QuestionResolve, db: Session = D
     db.refresh(q)
 
     if payload.save_to_faq:
-        # Check for similar existing FAQs to avoid duplicates
         existing_faqs = db.query(FAQEntry).all()
-        is_duplicate = False
+        q_embedding = llm_client.get_embedding(q.question_text)
         
-        q_words = set(q.question_text.lower().split())
+        found_similar = False
+        normalized_question_text = q.question_text.strip().lower()
+
+        # 1. Try to find a simple, exact text match first.
         for existing in existing_faqs:
-            existing_words = set(existing.question.lower().split())
-            overlap = len(q_words.intersection(existing_words))
-            similarity = overlap / max(len(q_words), len(existing_words)) if max(len(q_words), len(existing_words)) > 0 else 0
-            
-            # If 70% similar, consider it a duplicate
-            if similarity > 0.7:
-                is_duplicate = True
+            if existing.question.strip().lower() == normalized_question_text:
+                existing.ask_count += 1
+                db.add(existing)
+                found_similar = True
+                print(f"[FAQ] Found exact text match (ID: {existing.id}), incrementing ask_count.")
                 break
         
-        if not is_duplicate:
-            entry = FAQEntry(question=q.question_text, answer=q.resolved_answer)
+        # 2. If no exact match AND embeddings are working, try semantic search
+        if not found_similar and q_embedding and existing_faqs:
+            print("[FAQ] No exact match. Trying semantic search...")
+            q_vec = np.array(q_embedding).reshape(1, -1)
+            for existing in existing_faqs:
+                existing_embedding = llm_client.get_embedding(existing.question)
+                if not existing_embedding:
+                    continue
+                
+                ex_vec = np.array(existing_embedding).reshape(1, -1)
+                similarity = cosine_similarity(q_vec, ex_vec)[0][0]
+                
+                # If 80% similar, increment count
+                if similarity > 0.8:
+                    existing.ask_count += 1
+                    db.add(existing)
+                    found_similar = True
+                    print(f"[FAQ] Found semantic match (ID: {existing.id}), incrementing ask_count.")
+                    break
+        elif not found_similar:
+            print("[FAQ] No exact or semantic match found.")
+        
+        if not q_embedding:
+            print("[FAQ] WARNING: Embedding model failed to return a vector. Semantic search was skipped.")
+
+        # 3. If still no match, create a new entry
+        if not found_similar:
+            entry = FAQEntry(
+                question=q.question_text, 
+                answer=q.resolved_answer,
+                ask_count=1
+            )
             db.add(entry)
-            db.commit()
-            # Cluster FAQs after adding new one
-            _cluster_faqs(db)
+            print("[FAQ] Creating new FAQ entry.")
+
+        db.commit()
+        # Re-cluster FAQs after any change
+        _cluster_faqs(db)
 
     return QuestionOut.model_validate(q)
 
 
 def _cluster_faqs(db: Session):
-    """Cluster FAQs based on word overlap and semantic similarity."""
+    """Cluster FAQs based on semantic similarity using DBSCAN."""
     faqs = db.query(FAQEntry).all()
-    if len(faqs) < 2:
+    if len(faqs) < 3: # Not enough data to cluster
+        print("[Clustering] Not enough FAQs to cluster, skipping.")
         return
+
+    embeddings = []
+    faqs_with_embeddings = []
+    print("[Clustering] Generating embeddings for all FAQs...")
+    for faq in faqs:
+        vec = llm_client.get_embedding(faq.question)
+        if vec:
+            embeddings.append(vec)
+            faqs_with_embeddings.append(faq)
     
-    # Reset clusters
+    if len(embeddings) < 2:
+        print("[Clustering] Not enough embeddings generated, skipping.")
+        return
+
+    X = np.array(embeddings)
+        
+    # DBSCAN parameters:
+    # 'metric' is 'cosine', so 'eps' is a measure of cosine distance (1 - similarity).
+    # eps=0.4 means a cosine similarity of 1 - 0.4 = 0.6 is required to be "close".
+    # 'min_samples'=2 means a cluster must have at least 2 questions.
+    dbscan = DBSCAN(eps=0.4, min_samples=2, metric='cosine')
+    dbscan.fit(X) 
+    
+    labels = dbscan.labels_
+    # 'labels' is an array like [0, 0, 1, -1, 1]
+    # -1 means "outlier" (unclustered)
+    
+    clusters = {}
+    
+    # Reset all cluster info first
     for faq in faqs:
         faq.cluster_id = None
         faq.cluster_name = None
-    
-    cluster_id = 0
-    clustered = set()
-    clusters_to_name = []  # Store clusters that need names
-    
-    # Remove common stop words for better matching
-    stop_words = {'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 
-                  'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'should',
-                  'can', 'could', 'may', 'might', 'must', 'i', 'you', 'he', 'she', 'it',
-                  'we', 'they', 'what', 'which', 'who', 'when', 'where', 'why', 'how',
-                  'to', 'from', 'in', 'on', 'at', 'by', 'for', 'with', 'about', 'as'}
-    
-    for i, faq1 in enumerate(faqs):
-        if faq1.id in clustered:
-            continue
+
+    # Assign new cluster IDs
+    for i, faq in enumerate(faqs_with_embeddings):
+        cluster_id = int(labels[i])
         
-        # Start potential cluster
-        cluster_members = [faq1]
-        clustered.add(faq1.id)
-        
-        # Filter out stop words and get meaningful words
-        words1 = set(w for w in faq1.question.lower().split() if w not in stop_words and len(w) > 2)
-        
-        # Find similar FAQs
-        for faq2 in faqs[i+1:]:
-            if faq2.id in clustered:
-                continue
+        if cluster_id != -1: # Not an outlier
+            faq.cluster_id = cluster_id
+            if cluster_id not in clusters:
+                clusters[cluster_id] = []
+            clusters[cluster_id].append(faq)
             
-            words2 = set(w for w in faq2.question.lower().split() if w not in stop_words and len(w) > 2)
-            
-            if not words1 or not words2:
-                continue
-                
-            overlap = len(words1.intersection(words2))
-            union = len(words1.union(words2))
-            
-            # Jaccard similarity: intersection / union
-            similarity = overlap / union if union > 0 else 0
-            
-            # If 30% similar (more lenient), add to same cluster
-            if similarity > 0.3 and overlap >= 2:  # At least 2 words in common
-                cluster_members.append(faq2)
-                clustered.add(faq2.id)
-        
-        # Only assign cluster ID if there are multiple members
-        if len(cluster_members) > 1:
-            for faq in cluster_members:
-                faq.cluster_id = cluster_id
-            clusters_to_name.append((cluster_id, cluster_members))
-            cluster_id += 1
-        # Otherwise leave cluster_id as None (unclustered)
-    
-    # Generate meaningful names for clusters using LLM
-    for cid, members in clusters_to_name:
-        questions = [m.question for m in members]
-        cluster_name = _generate_cluster_name(questions)
-        for faq in members:
-            faq.cluster_name = cluster_name
+    print(f"[Clustering] Found {len(clusters)} clusters and {np.sum(labels == -1)} outliers.")
+
+    # 3. Generate meaningful names for clusters using LLM
+    for cid, members in clusters.items():
+        if len(members) > 1: # Only name if it's a real cluster
+            questions = [m.question for m in members]
+            cluster_name = _generate_cluster_name(questions)
+            for faq in members:
+                faq.cluster_name = cluster_name
     
     db.commit()
 
@@ -308,7 +383,7 @@ def _generate_cluster_name(questions: list[str]) -> str:
     
     try:
         topic = llm_client._generate(prompt, max_tokens=50).strip()
-        # Clean up the response - take first line, remove quotes, limit length
+        # Clean up the response
         topic = topic.split('\n')[0].strip('"\' ').strip()
         if len(topic) > 50:
             topic = topic[:50].rsplit(' ', 1)[0] + '...'
@@ -320,15 +395,45 @@ def _generate_cluster_name(questions: list[str]) -> str:
 
 @app.get("/api/faq", response_model=list[FAQEntryOut])
 def list_faq(db: Session = Depends(get_db)):
-    faqs = db.query(FAQEntry).order_by(FAQEntry.cluster_id.asc().nullsfirst(), FAQEntry.created_at.desc()).all()
+    """Get all FAQs that meet the TA's configured threshold."""
+    setting = db.query(CourseSettings).filter(CourseSettings.key == "faq_threshold").first()
+    threshold = int(setting.value) if setting else 1 # Default to 1 if not set
+
+    faqs = (
+        db.query(FAQEntry)
+        .filter(FAQEntry.ask_count >= threshold)
+        .order_by(FAQEntry.cluster_id.asc().nullsfirst(), FAQEntry.created_at.desc())
+        .all()
+    )
     return [FAQEntryOut.model_validate(faq) for faq in faqs]
 
 
 @app.post("/api/faq/cluster")
 def cluster_faqs(db: Session = Depends(get_db)):
     """Manually trigger FAQ clustering."""
+    print("[Clustering] Manual clustering trigger received.")
     _cluster_faqs(db)
     return {"ok": True, "message": "FAQs clustered successfully"}
+
+
+@app.get("/api/settings", response_model=list[CourseSettingsOut])
+def get_settings(db: Session = Depends(get_db)):
+    settings = db.query(CourseSettings).all()
+    return settings
+
+@app.post("/api/settings")
+def update_settings(payload: CourseSettingsBase, db: Session = Depends(get_db)):
+    setting = db.query(CourseSettings).filter(CourseSettings.key == payload.key).first()
+    if setting:
+        setting.value = payload.value
+        print(f"[Settings] Updated {payload.key} to {payload.value}")
+    else:
+        setting = CourseSettings(key=payload.key, value=payload.value)
+        db.add(setting)
+        print(f"[Settings] Created {payload.key} as {payload.value}")
+    
+    db.commit()
+    return {"ok": True, "setting": setting}
 
 
 @app.get("/api/course_docs", response_model=list[CourseDocOut])
@@ -362,6 +467,7 @@ def delete_course_doc(doc_id: int, db: Session = Depends(get_db)):
 
 @app.post("/api/seed_sample")
 def seed_sample_data(db: Session = Depends(get_db)):
+    """Seed the database with sample data (idempotent)."""
     existing_docs = db.query(CourseDoc).count()
     if existing_docs == 0:
         doc1 = CourseDoc(
@@ -382,10 +488,12 @@ def seed_sample_data(db: Session = Depends(get_db)):
         faq1 = FAQEntry(
             question="What should I focus on for the midterm?",
             answer="Focus on understanding linear regression, logistic regression, and how to interpret model coefficients. Practice past homework problems and review lecture slides.",
+            ask_count=1 
         )
         faq2 = FAQEntry(
             question="Can I submit homework late?",
             answer="You can submit homework up to 48 hours late with a small penalty. After that, submissions are not accepted unless you have prior approval.",
+            ask_count=2
         )
         db.add_all([faq1, faq2])
         db.commit()
@@ -393,10 +501,11 @@ def seed_sample_data(db: Session = Depends(get_db)):
     return {"ok": True}
 
 
+# Mount the static frontend
 app.mount("/", StaticFiles(directory="../frontend", html=True), name="frontend")
 
 
 if __name__ == "__main__":
     import uvicorn
-
+    print("Starting OfficeHourLens server on http://0.0.0.0:8000")
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

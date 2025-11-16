@@ -28,6 +28,7 @@ class FAQEntry(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     cluster_id = Column(Integer, nullable=True)  # For grouping similar questions
     cluster_name = Column(String(200), nullable=True)  # AI-generated cluster topic name
+    ask_count = Column(Integer, default=1, nullable=False) # Count of how many times this was asked
 
 
 class CourseDoc(Base):
@@ -37,3 +38,10 @@ class CourseDoc(Base):
     title = Column(String(200), nullable=False)
     content = Column(Text, nullable=False)
     source_type = Column(String(50), nullable=False)  # syllabus, hw, slide, other
+
+class CourseSettings(Base):
+    __tablename__ = "course_settings"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    key = Column(String(100), unique=True, nullable=False) # e.g., "faq_threshold"
+    value = Column(String(200), nullable=False) # e.g., "2"

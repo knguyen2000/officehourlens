@@ -27,11 +27,7 @@
           <div class="field">
             <label>Your name or alias</label>
             <input id="s-name" type="text" placeholder="Alex" />
-          </div>
-          <div class="field">
-            <label>Course (optional)</label>
-            <input id="s-course" type="text" placeholder="CS 2100" />
-          </div>
+          </div>  
           <div class="field">
             <label>What are you stuck on?</label>
             <textarea id="s-question" placeholder="Describe your question or error here"></textarea>
@@ -68,10 +64,23 @@
             <tbody></tbody>
           </table>
 
-          <hr style="margin: 24px 0; border: 1px solid rgba(148, 163, 184, 0.3);" />
+          <hr class="divider" />
+
+          <h2>Settings</h2>
+          <p class="desc">Control how the FAQ page behaves.</p>
+          <div class="field">
+            <label>FAQ Threshold</label>
+            <input id="setting-faq-threshold" type="number" min="1" value="2" />
+            <p class="desc" style="font-size: 0.8rem; margin-top: 4px;">
+              Only show questions in the FAQ that have been asked at least this many times.
+            </p>
+          </div>
+          <button id="setting-save">Save Settings</button>
+          <p id="setting-status" class="status"></p>
+          <hr class="divider" />
 
           <h2>Course Materials</h2>
-          <p style="font-size: 0.85rem; color: #9ca3af;">Upload course documents to improve AI suggestions</p>
+          <p class="desc">Upload course documents to improve AI suggestions</p>
           
           <div class="field">
             <label>Document Title</label>
@@ -79,13 +88,21 @@
           </div>
           <div class="field">
             <label>Document Type</label>
-            <select id="doc-type" style="width: 100%; border-radius: 10px; border: 1px solid rgba(148, 163, 184, 0.4); padding: 8px 10px; background: rgba(15, 23, 42, 0.9); color: #f9fafb;">
+            <select id="doc-type" class="select-input">
               <option value="syllabus">Syllabus</option>
               <option value="hw">Homework</option>
               <option value="slide">Slides</option>
               <option value="lecture_notes">Lecture Notes</option>
               <option value="other">Other</option>
             </select>
+          </div>
+
+          <div class="field">
+            <label>Upload a file (or paste content below)</label>
+            <input id="doc-file" type="file" accept=".txt,.md,.py" />
+            <p class="desc" style="font-size: 0.8rem; margin-top: 4px;">
+              Loads content into the text box below. This will auto-fill the title.
+            </p>
           </div>
           <div class="field">
             <label>Content</label>
@@ -102,10 +119,11 @@
         </section>
 
         <section class="card hidden" id="faq-view">
-          <h2>FAQ – Frequently Asked Questions</h2>
+          <h2>FAQ</h2>
           <div class="field">
             <label>Refresh FAQ</label>
             <button id="faq-refresh">Refresh</button>
+            <button id="faq-delete-all" class="danger">Delete All FAQs</button>
           </div>
           <p id="faq-status" class="status"></p>
           <div id="faq-list" class="faq-list"></div>

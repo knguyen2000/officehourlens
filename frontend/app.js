@@ -30,6 +30,9 @@ function showTA() {
   $("tab-student").classList.remove("active");
   $("tab-ta").classList.add("active");
   $("tab-faq").classList.remove("active");
+  loadQueue();
+  loadCourseDocs();
+  loadSettings(); 
 }
 
 function showFAQ() {
@@ -133,20 +136,24 @@ async function handleTAButtonClick(event) {
       });
     } else if (action === "done") {
       const resolved = prompt(
-        "Enter a short summary of the answer (this can be saved to the FAQ):",
+        "Enter a short summary of the answer (this will be used for the FAQ):",
         ""
       );
-      if (resolved === null) return;
+      if (resolved === null) return; // User clicked cancel, do nothing
+      
+      const saveToFaq = true;
+      
       await callApi(`/api/questions/${id}/resolve`, {
         method: "POST",
         body: JSON.stringify({
           resolved_answer: resolved || "Answered during office hours.",
-          save_to_faq: true,
+          save_to_faq: saveToFaq, 
         }),
       });
     }
     await loadQueue();
-  } catch (err) {
+  } catch (err)
+ {
     console.error(err);
     alert("Error: " + err.message);
   }
@@ -156,57 +163,55 @@ function renderFAQList(faqs) {
   const container = $("faq-list");
   container.innerHTML = "";
   if (!faqs || faqs.length === 0) {
-    container.innerHTML = '<p class="status">No FAQ entries yet. TAs can add entries by marking questions as done.</p>';
+    container.innerHTML = '<p class="status">No FAQ entries found. (Note: Only questions asked multiple times, as set by the TA, will appear here.)</p>';
     return;
   }
   
-  // Separate clustered and unclustered FAQs
   const clusteredFaqs = faqs.filter(f => f.cluster_id !== null);
   const unclusteredFaqs = faqs.filter(f => f.cluster_id === null);
   
-  // Render clustered FAQs with headers
   let currentCluster = null;
   let clusterCount = 0;
   
   clusteredFaqs.forEach((faq) => {
-    // Add cluster header if new cluster
     if (faq.cluster_id !== currentCluster) {
       currentCluster = faq.cluster_id;
       clusterCount++;
       const header = document.createElement("div");
       header.className = "faq-cluster-header";
       const clusterName = faq.cluster_name || `Topic ${clusterCount}`;
-      header.textContent = `📚 ${clusterName}`;
+      header.textContent = `${clusterName}`;
       container.appendChild(header);
     }
     
     const item = document.createElement("div");
     item.className = "faq-item";
     const date = new Date(faq.created_at).toLocaleDateString();
+    const askCountText = faq.ask_count > 1 ? ` (Asked ${faq.ask_count} times)` : "";
     item.innerHTML = `
       <div class="faq-question">Q: ${faq.question}</div>
       <div class="faq-answer">A: ${faq.answer}</div>
-      <div class="faq-meta">Added on ${date}</div>
+      <div class="faq-meta">Added on ${date}${askCountText}</div>
     `;
     container.appendChild(item);
   });
   
-  // Render unclustered FAQs without headers
-  if (unclusteredFaqs.length > 0 && clusteredFaqs.length > 0) {
-    const header = document.createElement("div");
-    header.className = "faq-cluster-header";
-    header.textContent = "📝 Other Questions";
-    container.appendChild(header);
+  if (unclusteredFaqs.length > 0) {
+     const header = document.createElement("div");
+     header.className = "faq-cluster-header";
+     header.textContent = (clusteredFaqs.length > 0) ? "Other Questions" : "Questions";
+     container.appendChild(header);
   }
   
   unclusteredFaqs.forEach((faq) => {
     const item = document.createElement("div");
     item.className = "faq-item";
     const date = new Date(faq.created_at).toLocaleDateString();
+    const askCountText = faq.ask_count > 1 ? ` (Asked ${faq.ask_count} times)` : "";
     item.innerHTML = `
       <div class="faq-question">Q: ${faq.question}</div>
       <div class="faq-answer">A: ${faq.answer}</div>
-      <div class="faq-meta">Added on ${date}</div>
+      <div class="faq-meta">Added on ${date}${askCountText}</div>
     `;
     container.appendChild(item);
   });
@@ -247,6 +252,7 @@ async function handleDocSubmit() {
     $("doc-status").textContent = "Course material added successfully!";
     $("doc-title").value = "";
     $("doc-content").value = "";
+    $("doc-file").value = null; // Clear the file input
     await loadCourseDocs();
   } catch (err) {
     console.error(err);
@@ -300,6 +306,83 @@ async function deleteDoc(docId) {
   }
 }
 
+async function loadSettings() {
+    $("setting-status").textContent = "Loading settings...";
+    try {
+        const settings = await callApi("/api/settings");
+        const threshold = settings.find(s => s.key === "faq_threshold");
+        if (threshold) {
+            $("setting-faq-threshold").value = threshold.value;
+        }
+        $("setting-status").textContent = "";
+    } catch (err) {
+        console.error(err);
+        $("setting-status").textContent = "Error loading settings.";
+    }
+}
+
+async function saveSettings() {
+    $("setting-status").textContent = "Saving...";
+    const threshold = $("setting-faq-threshold").value;
+    
+    try {
+        await callApi("/api/settings", {
+            method: "POST",
+            body: JSON.stringify({
+                key: "faq_threshold",
+                value: threshold,
+            }),
+        });
+        $("setting-status").textContent = "Settings saved!";
+        if (!$("faq-view").classList.contains("hidden")) {
+            await loadFAQ();
+        }
+    } catch (err) {
+        console.error(err);
+        $("setting-status").textContent = "Error saving settings.";
+    }
+}
+
+async function handleDeleteAllFAQs() {
+  if (!confirm("Are you sure you want to PERMANENTLY delete ALL FAQ entries? This cannot be undone.")) {
+    return;
+  }
+  
+  $("faq-status").textContent = "Deleting all FAQs...";
+  try {
+    const data = await callApi("/api/faq/all", { method: "DELETE" });
+    $("faq-status").textContent = data.message || "All FAQs deleted.";
+    await loadFAQ(); 
+  } catch (err) {
+    console.error(err);
+    $("faq-status").textContent = "Error: " + err.message;
+  }
+}
+
+function handleFileLoad(event) {
+  const file = event.target.files[0];
+  if (!file) {
+    return; // No file selected
+  }
+
+  // Auto-fill the title with the file name (e.g., "HW1_Notes")
+  const fileName = file.name.split('.').slice(0, -1).join('.');
+  $("doc-title").value = fileName;
+
+  // Read the file content
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    const content = e.target.result;
+    $("doc-content").value = content; // Put text into the textarea
+    $("doc-status").textContent = `Loaded file ${file.name}. Click 'Add' to save.`;
+  };
+  reader.onerror = function() {
+     $("doc-status").textContent = "Error reading file.";
+  };
+  reader.readAsText(file);
+}
+
+
 window.addEventListener("DOMContentLoaded", () => {
   $("tab-student").addEventListener("click", showStudent);
   $("tab-ta").addEventListener("click", showTA);
@@ -310,6 +393,11 @@ window.addEventListener("DOMContentLoaded", () => {
   $("ta-table").addEventListener("click", handleTAButtonClick);
   $("doc-submit").addEventListener("click", handleDocSubmit);
   $("doc-refresh").addEventListener("click", loadCourseDocs);
+  $("setting-save").addEventListener("click", saveSettings);
+  $("faq-delete-all").addEventListener("click", handleDeleteAllFAQs);
+
+  // **** ADDED NEW EVENT LISTENER ****
+  $("doc-file").addEventListener("change", handleFileLoad);
 
   showStudent();
 });

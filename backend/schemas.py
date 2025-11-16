@@ -45,6 +45,7 @@ class FAQEntryOut(BaseModel):
     created_at: datetime
     cluster_id: Optional[int] = None
     cluster_name: Optional[str] = None
+    ask_count: int = 1
 
     class Config:
         from_attributes = True
@@ -62,5 +63,15 @@ class CourseDocOut(BaseModel):
     content: str
     source_type: str
 
+    class Config:
+        from_attributes = True
+
+class CourseSettingsBase(BaseModel):
+    key: str
+    value: str
+
+class CourseSettingsOut(CourseSettingsBase):
+    id: int
+    
     class Config:
         from_attributes = True
